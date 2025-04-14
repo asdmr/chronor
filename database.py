@@ -1,6 +1,6 @@
-import logging
-import os
 import sqlite3
+import os
+import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -9,192 +9,173 @@ DB_FOLDER = "data"
 DB_NAME = "activities.db"
 DB_PATH = os.path.join(DB_FOLDER, DB_NAME)
 
-
 def _get_db_connection():
-    """ Creating a database if not exists, used only in this code """
     try:
         if not os.path.exists(DB_FOLDER):
             os.makedirs(DB_FOLDER)
-            logger.info(f"{DB_FOLDER} is created for database")
+            logger.info(f"Created database folder at '{DB_FOLDER}'.")
 
-        con = sqlite3.connect(DB_PATH) # creates an object
-        con.execute("pragma foreign_keys = on;")
-        return con # return the object
+        con = sqlite3.connect(DB_PATH)
+        con.execute("PRAGMA foreign_keys = ON;")
+        return con
     except sqlite3.Error as e:
-        logger.error(f"Database initializing failed: {e}")
+        logger.error(f"Error connecting to DB '{DB_PATH}': {e}")
         raise
     except OSError as e:
-        logger.error(f"Data folder creation is failed: {e}")
+        logger.error(f"Error creating directory '{DB_FOLDER}': {e}")
         raise
 
-
 def _create_tables(con: sqlite3.Connection):
-    """ Creating tables if not exists, used only in this code """
     try:
         cur = con.cursor()
-        cur.execute("""
-            create table if not exists users (
-                user_id integer primary key,
-                telegram_username text,
-                first_name text not null,
-                created_at text
-            )
-        """)
-        logger.debug("'users' table is created/checked")
 
         cur.execute("""
-            create table if not exists tags (
-                tag_id integer primary key autoincrement,
-                user_id integer not null,
-                tag_name text not null collate nocase,
-                foreign key (user_id) references users (user_id) on delete cascade,
-                unique (user_id, tag_name)
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                telegram_username TEXT,
+                first_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
         """)
-        logger.debug("'tags' table is created/checked")
+        logger.debug("Table 'users' checked/created.")
 
         cur.execute("""
-            create table if not exists activities (
-                activity_id integer primary key autoincrement,
-                user_id integer not null,
-                timestamp text not null,
-                description text not null,
-                foreign key (user_id) references users (user_id) on delete cascade
+            CREATE TABLE IF NOT EXISTS tags (
+                tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tag_name TEXT NOT NULL COLLATE NOCASE,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+                UNIQUE (user_id, tag_name)
             )
         """)
-        logger.debug("'activities' table is created/checked")
+        logger.debug("Table 'tags' checked/created.")
 
         cur.execute("""
-            create table if not exists activity_tags (
-                activity_id integer not null,
-                tag_id integer not null,
-                foreign key (activity_id) references activities (activity_id) on delete cascade,
-                foreign key (tag_id) references tags (tag_id) on delete cascade,
-                primary key (activity_id, tag_id)
+            CREATE TABLE IF NOT EXISTS activities (
+                activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                description TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )
         """)
-        logger.debug("'activities' table is created/checked")
+        logger.debug("Table 'activities' checked/created.")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS activity_tags (
+                activity_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                FOREIGN KEY (activity_id) REFERENCES activities (activity_id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags (tag_id) ON DELETE CASCADE,
+                PRIMARY KEY (activity_id, tag_id)
+            )
+        """)
+        logger.debug("Table 'activity_tags' checked/created.")
 
         con.commit()
-        logger.info("A database structure is created/checked succesfully")
+        logger.info("Database table structure successfully checked/created.")
+
     except sqlite3.Error as e:
-        logger.error(f"Tables creation is failed: {e}")
+        logger.error(f"Error creating tables: {e}")
         con.rollback()
         raise
 
-
 def initialize_database():
-    """ initializing database, used in other code """
-    logger.info(f"Initialization of '{DB_PATH}' database is started")
+    logger.info(f"Initializing database at '{DB_PATH}'...")
     try:
-        con = _get_db_connection() # gets the object of sqlite3
-        _create_tables(con) # checks whether tables exist, if not tables wil be created
+        con = _get_db_connection()
+        _create_tables(con)
         con.close()
-        logger.info("Database is initialized successfully")
+        logger.info("Database initialization finished.")
     except Exception as e:
-        logger.critical(f"Critical error in database initialization: {e}")
+        logger.critical(f"Critical error during database initialization: {e}", exc_info=True)
         raise
 
-
-def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> int | None:
-    sql = "insert into activities (user_id, description, timestamp) values (?, ?, ?)"
-    activity_id = None
-    try:
-        con = _get_db_connection() # gets the object of sqlite3
-        cur = con.cursor() # checks whether tables exist, if not tables wil be created
-        cur.execute(sql, (user_id, description, timestamp.isoformat()))
-        activity_id = cur.lastrowid # the most recent added activity_id
-        con.commit()
-        con.close()
-        logger.info(
-            f"The activity '{description[:20]}...' for user {user_id} is saved with id: {activity_id}")
-        return activity_id
-    except sqlite3.Error as e:
-        logger.error(
-            f"Saving an activity for user {user_id} to database is failed: {e}")
-        if con:
-            con.close()
-        return None
-
-
 def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
-    """ adds user_id so it can be used in activities table """
-    
     sql = """
-        insert or ignore into users (user_id, telegram_username, first_name, created_at)
-        values (?, ?, ?, ?)
+        INSERT OR IGNORE INTO users (user_id, telegram_username, first_name, created_at)
+        VALUES (?, ?, ?, ?)
     """
     now_iso = datetime.now().isoformat()
-
+    con = None
     try:
         con = _get_db_connection()
         cur = con.cursor()
         cur.execute(sql, (user_id, username, first_name, now_iso))
         con.commit()
-
         if cur.rowcount > 0:
-            logger.info(f"New user with user_id = {user_id}, username = {username} is added to database")
+            logger.info(f"New user user_id={user_id}, username={username} added to DB.")
         else:
-            logger.debug(f"The user with user_id = {user_id}, username = {username} already exists in database")
+            logger.debug(f"User user_id={user_id}, username={username} already exists in DB.")
         con.close()
     except sqlite3.Error as e:
-        logger.error(f"Adding/checking user {user_id} is failed in database: {e}")
+        logger.error(f"Error adding/checking user user_id={user_id} in DB: {e}")
         if con: con.close()
 
-def add_tag(user_id: int, tag_name: str) -> int | None:
-    """ adds user created tag to db and returns tag_id of that tag """
-
-    tag_name_lower = tag_name.lower()
-    tag_id = None
-
-    sql_insert = "insert into tags (user_id, tag_name) values (?, ?)"
-    sql_select = "select tag_id from tags where user_id = ? and tag_name = ?"
-
+def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> int | None:
+    sql = "INSERT INTO activities (user_id, description, timestamp) VALUES (?, ?, ?)"
+    activity_id = None
     con = None
     try:
         con = _get_db_connection()
         cur = con.cursor()
+        cur.execute(sql, (user_id, description, timestamp.isoformat()))
+        activity_id = cur.lastrowid
+        con.commit()
+        con.close()
+        logger.info(f"Activity '{description[:20]}...' for user {user_id} saved with ID {activity_id}.")
+        return activity_id
+    except sqlite3.Error as e:
+        logger.error(f"Error saving activity for user {user_id} to DB: {e}")
+        if con: con.close()
+        return None
 
+def add_tag(user_id: int, tag_name: str) -> int | None:
+    tag_name_lower = tag_name.lower()
+    tag_id = None
+    sql_insert = "INSERT INTO tags (user_id, tag_name) VALUES (?, ?)"
+    sql_select = "SELECT tag_id FROM tags WHERE user_id = ? AND tag_name = ?"
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
         cur.execute(sql_insert, (user_id, tag_name_lower))
         tag_id = cur.lastrowid
         con.commit()
-        logger.info(f"New tag '{tag_name_lower}' is added for user {user_id} with tag_id {tag_id}")
+        logger.info(f"New tag '{tag_name_lower}' added for user {user_id} with ID {tag_id}.")
         con.close()
         return tag_id
-    
     except sqlite3.IntegrityError:
-        logger.info(f"The tag '{tag_name_lower}' already exists for user {user_id}. Getting tag_id")
+        logger.info(f"Tag '{tag_name_lower}' for user {user_id} already exists. Fetching its ID.")
         if con:
             cur = con.cursor()
             try:
-                cur.execute(sql_select, (user_id, tag_name_lower))
-                result = cur.fetchone()
-                if result:
-                    tag_id = result[0]
-                    logger.info(f"The tag {tag_name_lower} is found for user {user_id}, which has tag_id {tag_id}")
-                    con.close()
-                    return tag_id
-                else:
-                    # weird situation: tag exists because of IntegrityError; however select query cannot find tag_id
-                    logger.error(f"The tag {tag_name_lower} is not found for user {user_id} after IntegrityError")
-                    con.close()
-                    return None
+                 cur.execute(sql_select, (user_id, tag_name_lower))
+                 result = cur.fetchone()
+                 if result:
+                     tag_id = result[0]
+                     logger.info(f"Found existing tag '{tag_name_lower}' for user {user_id} with ID {tag_id}.")
+                     con.close()
+                     return tag_id
+                 else:
+                     logger.error(f"Could not find tag '{tag_name_lower}' for user {user_id} after IntegrityError.")
+                     con.close()
+                     return None
             except sqlite3.Error as select_e:
-                logger.error(f"Select query for tag {tag_name_lower} is failed: {select.e}")
-                if con: con.close()
-                return None
+                 logger.error(f"Error selecting existing tag '{tag_name_lower}' for user {user_id}: {select_e}")
+                 if con: con.close()
+                 return None
         else:
-            logger.error(f"Connection with database is closed before select query")
+            logger.error("DB connection was closed before attempting to select existing tag.")
             return None
     except sqlite3.Error as e:
-        logger.error(f"SQLite error occured, while adding the tag {tag_name_lower} for user {user_id}: {e}")
+        logger.error(f"SQLite error adding tag '{tag_name_lower}' for user {user_id}: {e}")
         if con: con.rollback(); con.close()
         return None
 
 def get_tag_id(user_id: int, tag_name: str) -> int | None:
-    """ searches tag and returns tag_id """
     tag_id = None
-    sql = "select tag_id from tags where user_id = ? and tag_name = LOWER(?)"
+    sql = "SELECT tag_id FROM tags WHERE user_id = ? AND tag_name = LOWER(?)"
     con = None
     try:
         con = _get_db_connection()
@@ -204,21 +185,17 @@ def get_tag_id(user_id: int, tag_name: str) -> int | None:
         con.close()
         if result:
             tag_id = result[0]
-            logger.debug(f"A tag_id {tag_id} for the tag '{tag_name}' is found for user {user_id}")
+            logger.debug(f"Found ID {tag_id} for tag '{tag_name}' for user {user_id}")
         else:
-            logger.debug(f"A tag '{tag_name}' is not found for user {user_id}")
+            logger.debug(f"Tag '{tag_name}' not found for user {user_id}")
         return tag_id
-    
     except sqlite3.Error as e:
-        logger.error(f"SQLite error occured, while searching the tag {tag_name_lower} for user {user_id}: {e}")
+        logger.error(f"SQLite error finding tag '{tag_name}' for user {user_id}: {e}")
         if con: con.close()
         return None
 
-
-def link_activity_tag(activity_id: int, tag_id: int):
-    """ links activity to its tag in activity_tags table """
-
-    sql = "insert or ignore into activity_tags (activity_id, tag_id) values (?, ?)"
+def link_activity_tag(activity_id: int, tag_id: int) -> bool:
+    sql = "INSERT OR IGNORE INTO activity_tags (activity_id, tag_id) VALUES (?, ?)"
     success = False
     con = None
     try:
@@ -226,25 +203,21 @@ def link_activity_tag(activity_id: int, tag_id: int):
         cur = con.cursor()
         cur.execute(sql, (activity_id, tag_id))
         con.commit()
-
         if cur.rowcount > 0:
-            logger.info(f"Link is created: activity_id={activity_id}, tag_id={tag_id}")
+            logger.info(f"Link created: activity_id={activity_id}, tag_id={tag_id}")
         else:
-            logger.info(f"The link activity_id={activity_id}, tag_id={tag_id} is already exists or not yet created")
+            logger.info(f"Link activity_id={activity_id}, tag_id={tag_id} already exists or not created.")
         con.close()
         success = True
     except sqlite3.Error as e:
-        logger.error(f"SQLite error occured, while linking activity {activity_id} and tag {tag_id}: {e}")
+        logger.error(f"SQLite error linking activity {activity_id} and tag {tag_id}: {e}")
         if con: con.rollback(); con.close()
         success = False
     return success
 
-
 def get_user_tags(user_id: int) -> list[str]:
-    """ returns user created tags in list from database """
-    
     tags_list = []
-    sql = "select tag_name from tags where user_id = ? order by tag_name"
+    sql = "SELECT tag_name FROM tags WHERE user_id = ? ORDER BY tag_name"
     con = None
     try:
         con = _get_db_connection()
@@ -252,37 +225,83 @@ def get_user_tags(user_id: int) -> list[str]:
         cur.execute(sql, (user_id,))
         results = cur.fetchall()
         con.close()
-
         tags_list = [row[0] for row in results]
-        logger.info(f"Got {len(tags_list)} tags for user {user_id}")
+        logger.info(f"Retrieved {len(tags_list)} tags for user {user_id}.")
         return tags_list
     except sqlite3.Error as e:
-        logger.error(f"SQLite error occured for user {user_id}: {e}")
+        logger.error(f"SQLite error retrieving tags for user {user_id}: {e}")
         if con: con.close()
         return []
 
 def delete_tag(user_id: int, tag_name: str) -> bool:
-    """ returns true if tag is deleted successfully, else false """
-
     tag_name_lower = tag_name.lower()
     deleted = False
-    sql = "delete from tags where user_id = ? and tag_name = ?"
+    sql = "DELETE FROM tags WHERE user_id = ? AND tag_name = ?"
     con = None
     try:
         con = _get_db_connection()
         cur = con.cursor()
         cur.execute(sql, (user_id, tag_name_lower))
         con.commit()
-    
         if cur.rowcount > 0:
             deleted = True
-            logger.info(f"Tag '{tag_name_lower} for user {user_id} is deleted")
+            logger.info(f"Tag '{tag_name_lower}' for user {user_id} deleted.")
         else:
-            logger.warning(f"Attempt to delete the tag '{tag_name_lower} for user {user_id}, but it is not found")
+            logger.warning(f"Attempted to delete tag '{tag_name_lower}' for user {user_id}, but it was not found.")
         con.close()
         return deleted
-    
     except sqlite3.Error as e:
-        logger.error(f"SQLite error occured while deleting tag '{tag_name_lower} for user {user_id}: {e}")
+        logger.error(f"SQLite error deleting tag '{tag_name_lower}' for user {user_id}: {e}")
         if con: con.rollback(); con.close()
         return False
+
+def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[str, str]]:
+    activities_list = []
+    sql = """
+        SELECT timestamp, description
+        FROM activities
+        WHERE user_id = ? AND DATE(timestamp) = ?
+        ORDER BY timestamp ASC
+    """
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (user_id, report_date))
+        results = cur.fetchall()
+        con.close()
+        activities_list = results
+        logger.info(f"Found {len(activities_list)} activities for user {user_id} on date {report_date}.")
+        return activities_list
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error retrieving activities for user {user_id} on date {report_date}: {e}")
+        if con: con.close()
+        return []
+
+def get_activities_with_tags_for_day(user_id: int, report_date: str) -> list[tuple[str, str | None]]:
+    results_list = []
+    sql = """
+        SELECT
+            a.timestamp,
+            GROUP_CONCAT(t.tag_name ORDER BY t.tag_name ASC) AS concatenated_tags
+        FROM activities a
+        LEFT JOIN activity_tags at ON a.activity_id = at.activity_id
+        LEFT JOIN tags t ON at.tag_id = t.tag_id AND t.user_id = a.user_id
+        WHERE a.user_id = ? AND DATE(a.timestamp) = ?
+        GROUP BY a.activity_id
+        ORDER BY a.timestamp ASC;
+    """
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (user_id, report_date))
+        results = cur.fetchall()
+        con.close()
+        results_list = results
+        logger.info(f"Found {len(results_list)} activities (with tags) for user {user_id} on date {report_date}.")
+        return results_list
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error retrieving activities with tags for user {user_id} on date {report_date}: {e}")
+        if con: con.close()
+        return []
