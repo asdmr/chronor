@@ -11,7 +11,7 @@ import handlers
 load_dotenv()
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)-6s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -34,6 +34,7 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", handlers.start))
+    application.add_handler(CommandHandler("help", handlers.help))
     application.add_handler(CommandHandler("addtag", handlers.add_tag_handler))
     application.add_handler(CommandHandler("listtags", handlers.list_tags_handler))
     application.add_handler(CommandHandler("deltag", handlers.delete_tag_handler))
