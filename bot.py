@@ -2,7 +2,8 @@ import logging
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import (Application, CommandHandler, MessageHandler, filters,
+                          CallbackQueryHandler)
 from apscheduler.triggers.cron import CronTrigger
 
 import database
@@ -13,9 +14,9 @@ load_dotenv()
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +36,10 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))
-    application.add_handler(CommandHandler("addtag", handlers.add_tag_handler))
-    application.add_handler(CommandHandler("listtags", handlers.list_tags_handler))
-    application.add_handler(CommandHandler("deltag", handlers.delete_tag_handler))
     application.add_handler(CommandHandler("report", handlers.report_handler))
-    application.add_handler(CommandHandler("tag_report", handlers.tag_report_handler))
     application.add_handler(CommandHandler("hide_keyboard", handlers.hide_keyboard_handler))
 
-    application.add_handler(MessageHandler(filters.Text(["🏷️ List Tags"]), handlers.list_tags_button_handler))
     application.add_handler(MessageHandler(filters.Text(["📊 Activity Report"]), handlers.report_button_handler))
-    application.add_handler(MessageHandler(filters.Text(["📈 Tag Report"]), handlers.tag_report_button_handler))
     application.add_handler(MessageHandler(filters.Text(["❓ Help / Show Menu"]), handlers.help_button_handler))
     application.add_handler(MessageHandler(filters.Text(["⌨️ Hide Keyboard"]), handlers.hide_keyboard_button_handler))
 
@@ -53,9 +48,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handlers.button_callback_handler))
 
     job_queue = application.job_queue
-
-    trigger = CronTrigger(minute='0,30', hour='8-23')
-
+    trigger = CronTrigger(minute='0,30', hour='6-23')
     job_queue.run_custom(
         callback=handlers.ask_activity,
         job_kwargs={'trigger': trigger, 'misfire_grace_time': 30},
