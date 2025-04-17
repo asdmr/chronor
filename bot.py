@@ -6,10 +6,11 @@ from telegram.ext import (Application, CommandHandler, MessageHandler, filters,
                           CallbackQueryHandler)
 from apscheduler.triggers.cron import CronTrigger
 
+load_dotenv()
+
 import database
 import handlers
 
-load_dotenv()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -38,6 +39,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", handlers.help_command))
     application.add_handler(CommandHandler("report", handlers.report_handler))
     application.add_handler(CommandHandler("hide_keyboard", handlers.hide_keyboard_handler))
+    application.add_handler(CommandHandler("asknow", handlers.ask_now_handler))
 
     application.add_handler(MessageHandler(filters.Text(["📊 Activity Report"]), handlers.report_button_handler))
     application.add_handler(MessageHandler(filters.Text(["❓ Help / Show Menu"]), handlers.help_button_handler))

@@ -9,6 +9,7 @@ DB_FOLDER = "data"
 DB_NAME = "activities.db"
 DB_PATH = os.path.join(DB_FOLDER, DB_NAME)
 
+
 def _get_db_connection():
     try:
         if not os.path.exists(DB_FOLDER):
@@ -23,6 +24,7 @@ def _get_db_connection():
     except OSError as e:
         logger.error(f"Error creating directory '{DB_FOLDER}': {e}")
         raise
+
 
 def _create_tables(con: sqlite3.Connection):
     try:
@@ -47,11 +49,13 @@ def _create_tables(con: sqlite3.Connection):
         """)
         logger.debug("Table 'activities' checked/created.")
         con.commit()
-        logger.info("Database table structure successfully checked/created (user/activity only).")
+        logger.info(
+            "Database table structure successfully checked/created (user/activity only).")
     except sqlite3.Error as e:
         logger.error(f"Error creating tables: {e}")
         con.rollback()
         raise
+
 
 def initialize_database():
     logger.info(f"Initializing database at '{DB_PATH}'...")
@@ -61,8 +65,10 @@ def initialize_database():
         con.close()
         logger.info("Database initialization finished.")
     except Exception as e:
-        logger.critical(f"Critical error during database initialization: {e}", exc_info=True)
+        logger.critical(
+            f"Critical error during database initialization: {e}", exc_info=True)
         raise
+
 
 def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
     sql = """
@@ -76,12 +82,19 @@ def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
         cur = con.cursor()
         cur.execute(sql, (user_id, username, first_name, now_iso))
         con.commit()
-        if cur.rowcount > 0: logger.info(f"New user user_id={user_id}, username={username} added to DB.")
-        else: logger.debug(f"User user_id={user_id}, username={username} already exists in DB.")
+        if cur.rowcount > 0:
+            logger.info(
+                f"New user user_id={user_id}, username={username} added to DB.")
+        else:
+            logger.debug(
+                f"User user_id={user_id}, username={username} already exists in DB.")
         con.close()
     except sqlite3.Error as e:
-        logger.error(f"Error adding/checking user user_id={user_id} in DB: {e}")
-        if con: con.close()
+        logger.error(
+            f"Error adding/checking user user_id={user_id} in DB: {e}")
+        if con:
+            con.close()
+
 
 def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> int | None:
     sql = "INSERT INTO activities (user_id, description, timestamp) VALUES (?, ?, ?)"
@@ -94,17 +107,48 @@ def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> 
         activity_id = cur.lastrowid
         con.commit()
         con.close()
-        logger.info(f"Activity '{description[:20]}...' for user {user_id} saved with ID {activity_id}.")
+        logger.info(
+            f"Activity '{description[:20]}...' for user {user_id} saved with ID {activity_id}.")
         return activity_id
     except sqlite3.Error as e:
         logger.error(f"Error saving activity for user {user_id} to DB: {e}")
-        if con: con.close()
+        if con:
+            con.close()
         return None
 
-def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[str, str]]:
+
+def update_activity_description(activity_id: int, user_id: int, new_description: str) -> bool:
+    """Updates the description of a specific activity for a specific user."""
+    sql = "UPDATE activities SET description = ? WHERE activity_id = ? AND user_id = ?"
+    updated = False
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (new_description, activity_id, user_id))
+        con.commit()
+        if cur.rowcount > 0:
+            updated = True
+            logger.info(
+                f"Activity ID {activity_id} for user {user_id} updated successfully.")
+        else:
+            logger.warning(
+                f"Attempted to update activity ID {activity_id} for user {user_id}, but no matching record found.")
+        con.close()
+        return updated
+    except sqlite3.Error as e:
+        logger.error(
+            f"SQLite error updating activity ID {activity_id} for user {user_id}: {e}")
+        if con:
+            con.rollback()
+            con.close()
+        return False
+
+
+def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[int, str, str]]:
     activities_list = []
     sql = """
-        SELECT timestamp, description
+        SELECT activity_id, timestamp, description
         FROM activities
         WHERE user_id = ? AND DATE(timestamp) = ?
         ORDER BY timestamp ASC
@@ -117,9 +161,12 @@ def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[str, st
         results = cur.fetchall()
         con.close()
         activities_list = results
-        logger.info(f"Found {len(activities_list)} activities for user {user_id} on date {report_date}.")
+        logger.info(
+            f"Found {len(activities_list)} activities for user {user_id} on date {report_date}.")
         return activities_list
     except sqlite3.Error as e:
-        logger.error(f"SQLite error retrieving activities for user {user_id} on date {report_date}: {e}")
-        if con: con.close()
+        logger.error(
+            f"SQLite error retrieving activities for user {user_id} on date {report_date}: {e}")
+        if con:
+            con.close()
         return []
