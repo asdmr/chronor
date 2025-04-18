@@ -34,10 +34,13 @@ def _create_tables(con: sqlite3.Connection):
                 user_id INTEGER PRIMARY KEY,
                 telegram_username TEXT,
                 first_name TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                timezone TEXT DEFAULT NULL,
+                last_daily_report_sent_date TEXT DEFAULT NULL
             )
         """)
-        logger.debug("Table 'users' checked/created.")
+        logger.debug(
+            "Table 'users' checked/created (with timezone, last_report_date).")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS activities (
                 activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,10 +52,9 @@ def _create_tables(con: sqlite3.Connection):
         """)
         logger.debug("Table 'activities' checked/created.")
         con.commit()
-        logger.info(
-            "Database table structure successfully checked/created (user/activity only).")
+        logger.info("Database table structure successfully checked/updated.")
     except sqlite3.Error as e:
-        logger.error(f"Error creating tables: {e}")
+        logger.error(f"Error creating/updating tables: {e}")
         con.rollback()
         raise
 
@@ -72,8 +74,8 @@ def initialize_database():
 
 def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
     sql = """
-        INSERT OR IGNORE INTO users (user_id, telegram_username, first_name, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO users (user_id, telegram_username, first_name, created_at, timezone, last_daily_report_sent_date)
+        VALUES (?, ?, ?, ?, NULL, NULL)
     """
     now_iso = datetime.now().isoformat()
     con = None
@@ -92,8 +94,123 @@ def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
     except sqlite3.Error as e:
         logger.error(
             f"Error adding/checking user user_id={user_id} in DB: {e}")
-        if con:
-            con.close()
+        con.close() if con else None
+
+
+def update_user_timezone(user_id: int, timezone_str: str | None) -> bool:
+    sql = "UPDATE users SET timezone = ? WHERE user_id = ?"
+    success = False
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (timezone_str, user_id))
+        con.commit()
+        if cur.rowcount > 0:
+            success = True
+            logger.info(
+                f"Timezone for user {user_id} updated to '{timezone_str}'.")
+        else:
+            logger.warning(
+                f"Could not update timezone for user {user_id} (user not found?).")
+        con.close()
+        return success
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error updating timezone for user {user_id}: {e}")
+        con.rollback() if con else None
+        con.close() if con else None
+        return False
+
+
+def get_user_timezone_str(user_id: int) -> str | None:
+    sql = "SELECT timezone FROM users WHERE user_id = ?"
+    timezone_str = None
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (user_id,))
+        result = cur.fetchone()
+        con.close()
+        if result and result[0]:
+            timezone_str = result[0]
+            logger.debug(
+                f"Retrieved timezone '{timezone_str}' for user {user_id}.")
+        else:
+            logger.debug(f"No timezone set for user {user_id}.")
+        return timezone_str
+    except sqlite3.Error as e:
+        logger.error(
+            f"SQLite error retrieving timezone for user {user_id}: {e}")
+        con.close() if con else None
+        return None
+
+
+def get_all_user_ids_with_tz() -> list[int]:
+    user_ids = []
+    sql = "SELECT user_id FROM users WHERE timezone IS NOT NULL"
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql)
+        results = cur.fetchall()
+        con.close()
+        user_ids = [row[0] for row in results]
+        logger.info(f"Found {len(user_ids)} users with timezone set.")
+        return user_ids
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error retrieving users with timezone: {e}")
+        con.close() if con else None
+        return []
+
+
+def get_last_report_sent_date(user_id: int) -> str | None:
+    sql = "SELECT last_daily_report_sent_date FROM users WHERE user_id = ?"
+    date_str = None
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (user_id,))
+        result = cur.fetchone()
+        con.close()
+        if result and result[0]:
+            date_str = result[0]
+        logger.debug(
+            f"Last report sent date for user {user_id} is {date_str}.")
+        return date_str
+    except sqlite3.Error as e:
+        logger.error(
+            f"SQLite error getting last report sent date for user {user_id}: {e}")
+        con.close() if con else None
+        return None
+
+
+def update_last_report_sent_date(user_id: int, date_str: str) -> bool:
+    sql = "UPDATE users SET last_daily_report_sent_date = ? WHERE user_id = ?"
+    success = False
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (date_str, user_id))
+        con.commit()
+        if cur.rowcount > 0:
+            success = True
+            logger.info(
+                f"Updated last report sent date for user {user_id} to {date_str}.")
+        else:
+            logger.warning(
+                f"Could not update last report sent date for user {user_id} (user not found?).")
+        con.close()
+        return success
+    except sqlite3.Error as e:
+        logger.error(
+            f"SQLite error updating last report sent date for user {user_id}: {e}")
+        con.rollback() if con else None
+        con.close() if con else None
+        return False
 
 
 def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> int | None:
@@ -112,13 +229,32 @@ def save_activity_to_db(user_id: int, description: str, timestamp: datetime) -> 
         return activity_id
     except sqlite3.Error as e:
         logger.error(f"Error saving activity for user {user_id} to DB: {e}")
-        if con:
-            con.close()
+        con.close() if con else None
         return None
 
 
+def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[int, str, str]]:
+    activities_list = []
+    sql = "SELECT activity_id, timestamp, description FROM activities WHERE user_id = ? AND DATE(timestamp) = ? ORDER BY timestamp ASC"
+    con = None
+    try:
+        con = _get_db_connection()
+        cur = con.cursor()
+        cur.execute(sql, (user_id, report_date))
+        results = cur.fetchall()
+        con.close()
+        activities_list = results
+        logger.info(
+            f"Found {len(activities_list)} activities for user {user_id} on date {report_date}.")
+        return activities_list
+    except sqlite3.Error as e:
+        logger.error(
+            f"SQLite error retrieving activities for user {user_id} on date {report_date}: {e}")
+        con.close() if con else None
+        return []
+
+
 def update_activity_description(activity_id: int, user_id: int, new_description: str) -> bool:
-    """Updates the description of a specific activity for a specific user."""
     sql = "UPDATE activities SET description = ? WHERE activity_id = ? AND user_id = ?"
     updated = False
     con = None
@@ -139,34 +275,6 @@ def update_activity_description(activity_id: int, user_id: int, new_description:
     except sqlite3.Error as e:
         logger.error(
             f"SQLite error updating activity ID {activity_id} for user {user_id}: {e}")
-        if con:
-            con.rollback()
-            con.close()
+        con.rollback() if con else None
+        con.close() if con else None
         return False
-
-
-def get_activities_for_day(user_id: int, report_date: str) -> list[tuple[int, str, str]]:
-    activities_list = []
-    sql = """
-        SELECT activity_id, timestamp, description
-        FROM activities
-        WHERE user_id = ? AND DATE(timestamp) = ?
-        ORDER BY timestamp ASC
-    """
-    con = None
-    try:
-        con = _get_db_connection()
-        cur = con.cursor()
-        cur.execute(sql, (user_id, report_date))
-        results = cur.fetchall()
-        con.close()
-        activities_list = results
-        logger.info(
-            f"Found {len(activities_list)} activities for user {user_id} on date {report_date}.")
-        return activities_list
-    except sqlite3.Error as e:
-        logger.error(
-            f"SQLite error retrieving activities for user {user_id} on date {report_date}: {e}")
-        if con:
-            con.close()
-        return []
