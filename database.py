@@ -2,7 +2,8 @@
 Database interaction module for the Activity Tracker Bot.
 
 Handles SQLite database connection, table creation, and data operations
-for users, activities.
+for users and their activities, including settings like timezone,
+polling window, and report time preferences.
 """
 import logging
 import os
@@ -33,20 +34,25 @@ def _get_db_connection() -> sqlite3.Connection:
         OSError: If directory creation fails.
     """
     try:
+        # Ensure data directory exists
         if not os.path.exists(DB_FOLDER):
             os.makedirs(DB_FOLDER)
             logger.info(f"Created database folder at '{DB_FOLDER}'.")
+
+        # Connect to the database file
         con = sqlite3.connect(DB_PATH)
+
+        # Enable foreign key constraint enforcement for this connection
         con.execute("PRAGMA foreign_keys = ON;")
         logger.debug(
             "Database connection established with foreign keys enabled.")
         return con
     except sqlite3.Error as e:
         logger.error(f"Error connecting to DB '{DB_PATH}': {e}")
-        raise
+        raise  # Re-raise critical error
     except OSError as e:
         logger.error(f"Error creating directory '{DB_FOLDER}': {e}")
-        raise
+        raise  # Re-raise critical error
 
 
 def _create_tables(con: sqlite3.Connection):
@@ -59,35 +65,38 @@ def _create_tables(con: sqlite3.Connection):
     logger.debug("Checking/creating database tables...")
     try:
         cur = con.cursor()
-        # Users table
+
+        # Users table: Stores user info and their preferences
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                telegram_username TEXT,
-                first_name TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                timezone TEXT DEFAULT NULL,
-                last_daily_report_sent_date TEXT DEFAULT NULL,
-                poll_start_hour INTEGER DEFAULT 8,
-                poll_end_hour INTEGER DEFAULT 22,
-                report_time_hour INTEGER DEFAULT 8
+                user_id INTEGER PRIMARY KEY,          -- Telegram User ID
+                telegram_username TEXT,               -- Username (can be NULL)
+                first_name TEXT NOT NULL,             -- User's first name
+                created_at TEXT NOT NULL,             -- Timestamp of first /start
+                timezone TEXT DEFAULT NULL,           -- IANA timezone name (e.g., 'Asia/Almaty')
+                last_daily_report_sent_date TEXT DEFAULT NULL, -- Tracks last sent report date (YYYY-MM-DD)
+                poll_start_hour INTEGER DEFAULT 8,    -- Start hour for activity polling (local time)
+                poll_end_hour INTEGER DEFAULT 22,     -- End hour for activity polling (local time)
+                report_time_hour INTEGER DEFAULT 8      -- Preferred hour for daily report (local time)
             )
         """)
-        # Activities table
+
+        # Activities table: Stores logged activities
         cur.execute("""
             CREATE TABLE IF NOT EXISTS activities (
-                activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                timestamp TEXT NOT NULL,
-                description TEXT NOT NULL,
+                activity_id INTEGER PRIMARY KEY AUTOINCREMENT, -- Unique ID for each activity
+                user_id INTEGER NOT NULL,                      -- Link to the user
+                timestamp TEXT NOT NULL,                       -- Timestamp (UTC ISO format) when logged
+                description TEXT NOT NULL,                     -- User's activity description
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )
         """)
+
         con.commit()
         logger.info("Database table structure check/creation complete.")
     except sqlite3.Error as e:
         logger.error(f"Error creating/updating tables: {e}")
-        con.rollback()
+        con.rollback()  # Rollback changes if table creation fails
         raise
 
 
@@ -102,10 +111,11 @@ def initialize_database():
         con.close()
         logger.info("Database initialization finished successfully.")
     except Exception as e:
+        # Log critical error if DB init fails, as bot likely cannot run
         logger.critical(
             f"Critical error during database initialization: {e}", exc_info=True
         )
-        raise
+        raise  # Stop bot startup
 
 
 def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
@@ -118,13 +128,14 @@ def add_user_if_not_exists(user_id: int, username: str | None, first_name: str):
         username: The user's Telegram username (can be None).
         first_name: The user's first name.
     """
+    # INSERT OR IGNORE attempts to insert, but does nothing if user_id already exists
     sql = """
         INSERT OR IGNORE INTO users (
             user_id, telegram_username, first_name, created_at,
             timezone, last_daily_report_sent_date, poll_start_hour,
             poll_end_hour, report_time_hour
         )
-        VALUES (?, ?, ?, ?, NULL, NULL, 8, 22, 8)
+        VALUES (?, ?, ?, ?, NULL, NULL, 8, 22, 8) -- Set default values here
     """
     now_iso = datetime.now().isoformat()
     con = None
@@ -159,7 +170,7 @@ def update_user_timezone(user_id: int, timezone_str: str | None) -> bool:
         timezone_str: The IANA timezone name string (or None).
 
     Returns:
-        True if the update was successful, False otherwise.
+        True if the update was successful (affected 1 row), False otherwise.
     """
     sql = "UPDATE users SET timezone = ? WHERE user_id = ?"
     success = False
@@ -175,9 +186,8 @@ def update_user_timezone(user_id: int, timezone_str: str | None) -> bool:
                 f"Timezone for user {user_id} updated to '{timezone_str}'."
             )
         else:
-            # User not found is not necessarily an error here, just means no update
             logger.warning(
-                f"Attempted to update timezone for user {user_id}, but user not found."
+                f"Could not update timezone for user {user_id} (user not found?)."
             )
     except sqlite3.Error as e:
         logger.error(
@@ -194,7 +204,7 @@ def update_user_timezone(user_id: int, timezone_str: str | None) -> bool:
 
 def get_user_timezone_str(user_id: int) -> str | None:
     """
-    Gets the timezone string for a given user.
+    Gets the timezone string (IANA name) for a given user.
 
     Args:
         user_id: The user's Telegram ID.
@@ -228,7 +238,7 @@ def get_user_timezone_str(user_id: int) -> str | None:
 def get_all_user_ids_with_tz() -> list[int]:
     """Returns a list of unique user_ids that have a timezone set."""
     user_ids = []
-    sql = "SELECT user_id FROM users WHERE timezone IS NOT NULL"
+    sql = "SELECT user_id FROM users WHERE timezone IS NOT NULL AND timezone != ''"
     con = None
     try:
         con = _get_db_connection()
@@ -303,6 +313,7 @@ def update_last_report_sent_date(user_id: int, date_str: str) -> bool:
                 f"Updated last report sent date for user {user_id} to {date_str}."
             )
         else:
+            # This might happen if the user was deleted between job start and update
             logger.warning(
                 f"Could not update last report sent date for user {user_id}."
             )
@@ -333,6 +344,7 @@ def save_activity_to_db(
     Returns:
         The activity_id of the newly inserted row, or None on error.
     """
+    # Timestamp should be timezone-aware (UTC) before calling isoformat()
     sql = "INSERT INTO activities (user_id, description, timestamp) VALUES (?, ?, ?)"
     activity_id = None
     con = None
@@ -344,7 +356,7 @@ def save_activity_to_db(
         con.commit()
         logger.info(
             f"Activity '{description[:20]}...' for user {user_id} saved "
-            f"with ID {activity_id}."
+            f"with ID {activity_id} at {timestamp.isoformat()}."
         )
     except sqlite3.Error as e:
         logger.error(f"Error saving activity for user {user_id} to DB: {e}")
@@ -367,9 +379,10 @@ def get_activities_for_day(
 
     Returns:
         A list of tuples (activity_id, timestamp_str_utc, description),
-        ordered by timestamp.
+        ordered by timestamp. Returns empty list on error or if no data.
     """
     activities_list = []
+    # Select activity_id needed for the edit feature
     sql = """
         SELECT activity_id, timestamp, description
         FROM activities
@@ -391,6 +404,7 @@ def get_activities_for_day(
             f"SQLite error retrieving activities for user {user_id} "
             f"on date {report_date}: {e}"
         )
+        activities_list = []  # Ensure empty list on error
     finally:
         if con:
             con.close()
@@ -426,12 +440,13 @@ def update_activity_description(
         if cur.rowcount > 0:
             updated = True
             logger.info(
-                f"Activity ID {activity_id} for user {user_id} updated successfully."
+                f"Activity ID {activity_id} for user {user_id} updated."
             )
         else:
+            # Could be wrong activity_id or wrong user_id
             logger.warning(
-                f"Attempted to update activity ID {activity_id} for user {user_id}, "
-                f"but no matching record found (or description unchanged)."
+                f"Attempted update for activity ID {activity_id} / user {user_id} "
+                f"affected 0 rows."
             )
     except sqlite3.Error as e:
         logger.error(
@@ -454,7 +469,7 @@ def get_user_poll_window(user_id: int) -> tuple[int, int] | None:
         user_id: The user's Telegram ID.
 
     Returns:
-        A tuple (start_hour, end_hour) if set, otherwise None.
+        A tuple (start_hour, end_hour) if set and valid, otherwise None.
     """
     sql = "SELECT poll_start_hour, poll_end_hour FROM users WHERE user_id = ?"
     window = None
@@ -465,11 +480,16 @@ def get_user_poll_window(user_id: int) -> tuple[int, int] | None:
         cur.execute(sql, (user_id,))
         result = cur.fetchone()
         if result and result[0] is not None and result[1] is not None:
-            # Ensure they are integers
-            window = (int(result[0]), int(result[1]))
+            # Basic validation
+            start_h, end_h = int(result[0]), int(result[1])
+            if 0 <= start_h < end_h <= 23:
+                window = (start_h, end_h)
+            else:
+                logger.warning(
+                    f"Invalid poll window ({start_h}-{end_h}) found in DB for user {user_id}.")
         logger.debug(
             f"Poll window for user {user_id}: "
-            f"{f'{window[0]}-{window[1]}' if window else 'Not set (using defaults)'}."
+            f"{f'{window[0]}-{window[1]}' if window else 'Not set/Invalid (using defaults)'}."
         )
     except (sqlite3.Error, ValueError) as e:
         logger.error(
@@ -484,11 +504,12 @@ def get_user_poll_window(user_id: int) -> tuple[int, int] | None:
 def update_user_poll_window(user_id: int, start_hour: int, end_hour: int) -> bool:
     """
     Updates the polling window start and end hours for the user.
+    Assumes hours are already validated (0-23, start < end).
 
     Args:
         user_id: The user's Telegram ID.
-        start_hour: The hour polling should start (0-23).
-        end_hour: The hour polling should end (0-23, exclusive).
+        start_hour: The hour polling should start.
+        end_hour: The hour polling should end.
 
     Returns:
         True if successful, False otherwise.
@@ -531,7 +552,7 @@ def get_user_report_hour(user_id: int) -> int | None:
         user_id: The user's Telegram ID.
 
     Returns:
-        The hour (int) if set, otherwise None.
+        The hour (int) if set and valid, otherwise None.
     """
     sql = "SELECT report_time_hour FROM users WHERE user_id = ?"
     hour = None
@@ -542,10 +563,16 @@ def get_user_report_hour(user_id: int) -> int | None:
         cur.execute(sql, (user_id,))
         result = cur.fetchone()
         if result and result[0] is not None:
-            hour = int(result[0])
+            # Basic validation
+            h = int(result[0])
+            if 0 <= h <= 23:
+                hour = h
+            else:
+                logger.warning(
+                    f"Invalid report hour ({h}) found in DB for user {user_id}.")
         logger.debug(
             f"Report hour for user {user_id}: "
-            f"{hour if hour is not None else 'Not set (using default)'}."
+            f"{hour if hour is not None else 'Not set/Invalid (using default)'}."
         )
     except (sqlite3.Error, ValueError) as e:
         logger.error(
@@ -560,6 +587,7 @@ def get_user_report_hour(user_id: int) -> int | None:
 def update_user_report_hour(user_id: int, hour: int) -> bool:
     """
     Updates the preferred daily report hour for the user.
+    Assumes hour is already validated (0-23).
 
     Args:
         user_id: The user's Telegram ID.

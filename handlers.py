@@ -16,6 +16,7 @@ from telegram import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, Update)
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
+from telegram.error import Forbidden
 
 # Local application imports
 import database
@@ -343,59 +344,74 @@ async def ask_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def ask_activity(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Scheduled job callback: checks time window and asks for activity."""
-    bot_data = context.bot_data
-    # This still assumes a single primary user from bot_data for polling
-    # For multi-user polling, this function needs significant changes
-    user_id = bot_data.get('user_id')
-    current_user_data = None
+    """Scheduled job: Polls all users with a timezone set about their activity."""
+    logger.info("Running scheduled activity poll job for relevant users.")
 
-    if not user_id:
-        logger.warning(
-            "ask_activity job failed: user_id not found in bot_data.")
+    user_ids_to_poll = database.get_all_user_ids_with_tz()
+
+    if not user_ids_to_poll:
+        logger.info("No users with timezone found to poll.")
         return
 
-    # Check user's local time window
-    try:
-        poll_window = database.get_user_poll_window(user_id)
-        start_h, end_h = poll_window or (
-            DEFAULT_POLL_START_HOUR, DEFAULT_POLL_END_HOUR)
-        logger.debug(
-            f"Checking poll window {start_h}-{end_h} for user {user_id}")
+    logger.info(f"Found {len(user_ids_to_poll)} users to check for polling.")
+    polled_count = 0
+    now_utc = datetime.now(timezone.utc)
 
-        now_utc = datetime.now(timezone.utc)
-        user_local_time = _get_user_local_time(user_id, now_utc)
+    # Use bot_data for storing a flag
+    poll_states = context.bot_data.setdefault('user_poll_state', {})
 
-        if not (start_h <= user_local_time.hour <= end_h):
-            logger.debug(
-                f"Skipping poll for {user_id}: Local time {user_local_time.strftime('%H:%M')} outside window.")
-            return
-    except Exception as time_check_e:
-        logger.error(
-            f"Error checking time/poll window for {user_id}: {time_check_e}", exc_info=True)
-        return  # Skip poll if time check fails
+    for user_id in user_ids_to_poll:
+        logger.debug(f"Checking user {user_id} for activity poll.")
 
-    # Send prompt if conditions met
-    try:
-        # Ensure user_data dict exists for this user in the application
-        if user_id not in context.application.user_data:
-            context.application.user_data[user_id] = {}
-        current_user_data = context.application.user_data[user_id]
+        # To ensure failure for one user doesn't stop the loop for others.
+        try:
+            poll_window = database.get_user_poll_window(user_id)
+            start_h, end_h = poll_window or (DEFAULT_POLL_START_HOUR, DEFAULT_POLL_END_HOUR)
+            logger.debug(f"Using poll window {start_h}-{end_h} for user {user_id}")
 
-        if not current_user_data.get('is_awaiting_activity'):
-            await context.bot.send_message(chat_id=user_id, text="🤔 What are you doing right now?")
-            current_user_data['is_awaiting_activity'] = True
-            logger.info(
-                f"Activity inquiry sent to user {user_id} at local time {user_local_time.strftime('%H:%M')}.")
-        else:
+            user_local_time = _get_user_local_time(user_id, now_utc)
+
+            if not (start_h <= user_local_time.hour <= end_h):
+                logger.debug(
+                    f"Skipping poll for {user_id}: Local time "
+                    f"{user_local_time.strftime('%H:%M')} outside window {start_h}:00-{end_h}:59."
+                )
+                await asyncio.sleep(0.05) # Small delay even when skipping
+                continue
+
+            # Get the user-specific data dictionary, creating it if it doesn't exist
+            if not poll_states.get(user_id): # Проверяем флаг для этого user_id
+                await context.bot.send_message(chat_id=user_id, text="🤔 What are you doing right now?")
+                poll_states[user_id] = True # Устанавливаем флаг для этого user_id
+                logger.info(
+                    f"Activity inquiry sent to user {user_id} "
+                    f"at their local time {user_local_time.strftime('%H:%M')}."
+                )
+                polled_count += 1
+            else:
+                # Avoid spamming if user hasn't replied to the previous prompt
+                logger.warning(
+                    f"Tried asking user {user_id}, but previous response still pending."
+                )
+
+            # Pause briefly between users to respect potential rate limits
+            await asyncio.sleep(0.1)
+
+        except Forbidden:
+            # Handle cases where the bot is blocked by the user
             logger.warning(
-                f"Tried asking user {user_id}, but response still pending.")
-    except Exception as e:
-        logger.error(
-            f"Error sending activity prompt to {user_id}: {e}", exc_info=True)
-        # Clear flag on error to avoid getting stuck
-        if current_user_data is not None:
-            current_user_data.pop('is_awaiting_activity', None)
+                f"User {user_id} has blocked the bot. Cannot send activity prompt."
+            )
+            poll_states.pop(user_id, None) # Reset the flag
+        except Exception as e:
+            # Catch any other error during processing for this specific user
+            logger.error(
+                f"Error processing user {user_id} in ask_activity job: {e}",
+                exc_info=True # Include traceback for unexpected errors
+            )
+            poll_states.pop(user_id, None) # Reset the flag
+
+    logger.info(f"Finished activity poll job. Sent prompts to {polled_count} users.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,12 +446,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('editing_activity_id', None)
         await update.message.reply_text(reply_text)
         return  # IMPORTANT: Stop processing here
-
-    # 2. Check if user is replying to activity poll
-    elif context.user_data.get('is_awaiting_activity'):
+    
+    poll_states = context.bot_data.setdefault('user_poll_state', {})
+    if poll_states.get(user_id):
         logger.info(
             f"Received activity response from {user_id}: {message_text}")
-        context.user_data['is_awaiting_activity'] = False
+        poll_states.pop(user_id, None)
+        
         description_to_save = message_text
         now_utc = datetime.now(timezone.utc)  # Store time in UTC
 
